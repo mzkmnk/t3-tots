@@ -1,6 +1,6 @@
 // skills/t3-project-bot-setup: the t3listen commands it gives exist and can't replace the main webhook, the output it quotes is what
 // t3listen prints, its steps work against a fake T3 and a dummy webhook (osascript and install are left out: they touch the real Mac),
-// and its project bot templates fill cleanly. Run: node --test tests/project-bot-setup.test.js
+// and its project bot template fills cleanly. Run: node --test tests/project-bot-setup.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), path = require("path"), cp = require("child_process");
@@ -48,7 +48,7 @@ test("the setup window starts setup only on a t3listen that knows routes, so an 
   const windowCmd = (dir, name) => lit(m[1]) + quoted(dir) + lit(m[2]) + quoted(name) + lit(m[3]);
   const os = require("os"), main = { url: "https://example.com/hooks/main", headers: { Authorization: "Bearer main" } }, name = "My App's $(id) `x`";
   const folder = (t3listen) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), "t3-project-bot-setup-")); fakeT3.copyTools(d); if (t3listen) fs.writeFileSync(path.join(d, "t3listen"), t3listen); fs.writeFileSync(path.join(d, "listen.json"), JSON.stringify(main)); return d; };
-  const paste = "https://example.com/hooks/notifier\nAuthorization: Bearer notifier\n";
+  const paste = "https://example.com/hooks/project-bot\nAuthorization: Bearer project-bot\n";
   const sh = (d) => cp.spawnSync("sh", ["-c", windowCmd(d, name)], { input: paste, encoding: "utf8", env: { ...process.env, T3_HOME: path.join(d, "no-t3") } });
   // an older t3listen: its usage has no --project, and its setup would overwrite url (left here as a marker file)
   const old = folder('if (process.argv[2] === "setup") require("fs").writeFileSync(require("path").join(__dirname, "SETUP_RAN"), "");\nelse console.log("t3listen setup [--machine name]   read the webhook URL");\n');
@@ -98,14 +98,14 @@ test("end to end: the skill's checks, setup, test, status and remove against a f
     assert.equal(r.code, 0, r.out); assert.doesNotMatch(r.out, /note:/); assert.match(r.out, /^DRY-RUN payload \{/m);
     assert.deepEqual(f.hits, [], "dry runs send nothing");
     // Setup step 3: what the user pastes into the Terminal window (piped here)
-    r = await run("t3listen", ["setup", "--project", "mobile-app"], `${f.hookUrl("/notifier")}\nAuthorization: Bearer notifier-key-BBBB\n`);
+    r = await run("t3listen", ["setup", "--project", "mobile-app"], `${f.hookUrl("/project-bot")}\nAuthorization: Bearer project-bot-key-BBBB\n`);
     assert.equal(r.code, 0, r.out); assert.match(r.out, /^saved listen\.json \(route "mobile-app": url http:\/\/127\.0\.0\.1:\d+\/\*\*\*\*, 1 header\(s\)/);
-    assert.ok(!r.out.includes("notifier-key") && !r.out.includes("/notifier"));
+    assert.ok(!r.out.includes("project-bot-key") && !r.out.includes("/project-bot"));
     assert.match((await run("t3listen", ["status"])).out, /^routes: "mobile-app" \(1 header\); other projects go to url$/m);
     // Setup step 4
     r = await run("t3listen", ["test", "--project", "mobile-app"]);
     assert.equal(r.out, 'OK: route "mobile-app" answered HTTP 200\n');
-    assert.deepEqual(f.hits.map((h) => [h.path, h.e.event, h.e.project, h.headers.authorization]), [["/notifier", "test", "mobile-app", "Bearer notifier-key-BBBB"]]);
+    assert.deepEqual(f.hits.map((h) => [h.path, h.e.event, h.e.project, h.headers.authorization]), [["/project-bot", "test", "mobile-app", "Bearer project-bot-key-BBBB"]]);
     assert.equal(JSON.parse(fs.readFileSync(path.join(f.dir, "listen.json"), "utf8")).url, f.hookUrl(), "the main webhook is untouched");
     // Remove
     r = await run("t3listen", ["setup", "--project", "mobile-app", "--remove"]);
@@ -117,80 +117,74 @@ test("end to end: the skill's checks, setup, test, status and remove against a f
   } finally { await f.close(); }
 });
 
-// ---------- project bot templates: T3 Tots fills one to make a notifier or a project T3 Tots ----------
+// ---------- project bot template: T3 Tots fills it to make a T3 Tots for one project ----------
 const between = (from, to) => { const a = SKILL.indexOf(from), b = SKILL.indexOf(to, a + 1); assert.ok(a >= 0 && b > a, `${from} .. ${to}`); return SKILL.slice(a, b); };
-const TEMPLATES = between("## Project bot templates", "## Before you start");
-const part = (h) => { const a = TEMPLATES.indexOf(`### ${h}\n`); assert.ok(a >= 0, h); const b = TEMPLATES.indexOf("\n### ", a + 1); return TEMPLATES.slice(a, b < 0 ? undefined : b); };
+const TEMPLATE = between("## Project bot template", "## Before you start");
+const part = (h) => { const a = TEMPLATE.indexOf(`### ${h}\n`); assert.ok(a >= 0, h); const b = TEMPLATE.indexOf("\n### ", a + 1); return TEMPLATE.slice(a, b < 0 ? undefined : b); };
 const DUMMY = { bot_name: "Example Helper", project: "mobile-app", project_id: "proj-0001", path: "~/apps/mobile-app", machine: "office-computer", tools_folder: "~/t3-tots", language: "English" };
-function fill(kind, values) { // what T3 Tots does in "Make a project bot" step 2
-  let text = [part(kind), part("Shared rules"), part("Style")].join("\n");
+function fill(values) { // what T3 Tots does in "Make a project bot" step 2
+  let text = [part("Bot"), part("Rules"), part("Style")].join("\n");
   if (!values.watch_threads) text = text.split("\n").filter((l) => !l.includes("{watch_threads}")).join("\n");
   return text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m));
 }
 
-test("templates live in SKILL.md, because Grok Bot's skill sync carries only each skill's SKILL.md", () => {
+test("the template lives in SKILL.md, because Grok Bot's skill sync carries only each skill's SKILL.md", () => {
   assert.deepEqual(fs.readdirSync(path.join(ROOT, "skills", "t3-project-bot-setup")), ["SKILL.md"]);
-  assert.match(fs.readFileSync(path.join(ROOT, "skills", "t3-install-tools", "SKILL.md"), "utf8"), /f\["dest"\] != sid \+ "\/SKILL\.md": continue/, "if the fetcher syncs more files, the templates may move to a file of their own");
+  assert.match(fs.readFileSync(path.join(ROOT, "skills", "t3-install-tools", "SKILL.md"), "utf8"), /f\["dest"\] != sid \+ "\/SKILL\.md": continue/, "if the fetcher syncs more files, the template may move to a file of its own");
+  assert.deepEqual([...TEMPLATE.matchAll(/^### (.*)$/gm)].map((m) => m[1]), ["Bot", "Rules", "Style"]);
 });
 
-test("templates: every placeholder is in the table and used, and filling either kind leaves none", () => {
-  const defined = [...TEMPLATES.matchAll(/^\| `\{(\w+)\}` \|/gm)].map((m) => m[1]);
+test("template: every placeholder is in the table and used, and filling it leaves none", () => {
+  const defined = [...TEMPLATE.matchAll(/^\| `\{(\w+)\}` \|/gm)].map((m) => m[1]);
   assert.deepEqual(defined.sort(), ["bot_name", "language", "machine", "path", "project", "project_id", "tools_folder", "watch_threads"]);
   const used = new Set([...SKILL.matchAll(/\{(\w+)\}/g)].map((m) => m[1]));
   assert.deepEqual([...used].sort(), defined, "every {placeholder} in the skill is defined, and every defined one is used");
-  for (const kind of ["Notifier", "Project T3 Tots"]) {
-    const filled = fill(kind, DUMMY);
-    assert.doesNotMatch(filled, /\{\w+\}/, `${kind}: a placeholder is left`);
-    for (const v of ["Example Helper", "mobile-app", "office-computer", "English"]) assert.ok(filled.includes(v), `${kind} uses ${v}`);
-    assert.match(filled, /^- Name: Example Helper$/m); assert.match(filled, /^- Description: ONLY job: /m);
-  }
-  const project = fill("Project T3 Tots", DUMMY);
-  assert.ok(project.includes("(id proj-0001, folder ~/apps/mobile-app)") && project.includes("`--project proj-0001`") && project.includes("`node t3ctl threads --project proj-0001`"));
-  assert.ok(!project.includes("Threads to keep an eye on"), "no threads to watch: that line is dropped");
-  assert.match(fill("Project T3 Tots", { ...DUMMY, watch_threads: "Login screen, Release notes" }), /Threads to keep an eye on: Login screen, Release notes\. Offer a watch/);
-  assert.match(project, /Never write or edit code yourself/, "dropping the watch line keeps the rest");
+  const filled = fill(DUMMY);
+  assert.doesNotMatch(filled, /\{\w+\}/, "a placeholder is left");
+  for (const v of ["Example Helper", "mobile-app", "office-computer", "English"]) assert.ok(filled.includes(v), `uses ${v}`);
+  assert.match(filled, /^- Name: Example Helper$/m); assert.match(filled, /^- Description: ONLY job: /m);
+  assert.ok(filled.includes("(id proj-0001, folder ~/apps/mobile-app)") && filled.includes("`--project proj-0001`") && filled.includes("`node t3ctl threads --project proj-0001`"));
+  assert.ok(!filled.includes("Threads to keep an eye on"), "no threads to watch: that line is dropped");
+  assert.match(fill({ ...DUMMY, watch_threads: "Login screen, Release notes" }), /Threads to keep an eye on: Login screen, Release notes\. Offer a watch/);
+  assert.match(filled, /Never write or edit code yourself/, "dropping the watch line keeps the rest");
 });
 
-test("templates: each kind's skills exist with t3-tots-rules first; a T3 CLI skill is only added where the environment has one", () => {
-  const skills = (kind) => [...part(kind).match(/^- Skills: (.*)$/m)[1].matchAll(/\bt3-[a-z-]+\b/g)].map((m) => m[0]);
-  assert.deepEqual(skills("Notifier"), ["t3-tots-rules", "t3-project-bot-setup"]);
-  const p = skills("Project T3 Tots");
-  assert.equal(p[0], "t3-tots-rules");
-  for (const s of ["t3-project-bot-setup", "t3-new-thread", "t3-status", "t3-waiting", "t3-phone-answers", "t3-thread-actions", "t3-get-output", "t3-watch"]) assert.ok(p.includes(s), s);
-  for (const s of [...skills("Notifier"), ...p]) assert.ok(fs.existsSync(path.join(ROOT, "skills", s, "SKILL.md")), `${s} is a skill in this repo`);
-  assert.match(part("Project T3 Tots"), /t3code-cli\) only if this environment has one/);
+test("template: its skills exist with t3-tots-rules first; a T3 CLI skill is only added where the environment has one", () => {
+  const skills = [...part("Bot").match(/^- Skills: (.*)$/m)[1].matchAll(/\bt3-[a-z-]+\b/g)].map((m) => m[0]);
+  assert.equal(skills[0], "t3-tots-rules");
+  for (const s of ["t3-project-bot-setup", "t3-new-thread", "t3-status", "t3-waiting", "t3-phone-answers", "t3-thread-actions", "t3-get-output", "t3-watch"]) assert.ok(skills.includes(s), s);
+  for (const s of skills) assert.ok(fs.existsSync(path.join(ROOT, "skills", s, "SKILL.md")), `${s} is a skill in this repo`);
+  assert.match(part("Bot"), /t3code-cli\) only if this environment has one/);
 });
 
-test("templates: shared rules need the user's yes for releases and money, keep secrets out, and the style gives 2 or 3 choices", () => {
-  const rules = part("Shared rules");
+test("template: the rules need the user's yes for releases and money, keep secrets out, and the style gives 2 or 3 choices", () => {
+  const rules = part("Rules");
   for (const w of ["push", "merge", "pull request", "TestFlight", "App Store Connect", "billing", "sign a build", "certificates", "Never delete threads",
     "Archive one only after the user's OK", "`token`", "`listen.json`", "`secrets/`", "`statev2.sqlite` only read-only", "Never put a key"]) assert.ok(rules.includes(w), w);
   assert.match(part("Style"), /Write in \{language\}, short and plain\. When the user has to decide, give 2 or 3 choices and say which one you recommend/);
-  const project = part("Project T3 Tots"), notifier = part("Notifier");
-  for (const w of ["Never write or edit code yourself", "That's for T3 Tots.", "screenshot", "t3-get-output", "propose the next step", "answer only with the user's pick"]) assert.ok(project.includes(w), w);
-  for (const w of ["Never answer questions or approvals", "never write code", "That's for T3 Tots."]) assert.ok(notifier.includes(w), w);
-  // the project T3 Tots has t3-phone-answers, whose own setup uses --machine and whose pause uninstalls: the pasted rules forbid both
-  const pasted = fill("Project T3 Tots", DUMMY);
+  for (const w of ["Never write or edit code yourself", "That's for T3 Tots.", "screenshot", "t3-get-output", "propose the next step", "answer only with the user's pick"]) assert.ok(part("Bot").includes(w), w);
+  // the bot has t3-phone-answers, whose own setup uses --machine and whose pause uninstalls: the pasted rules forbid both
+  const pasted = fill(DUMMY);
   for (const w of ["Never run `node t3listen setup` without `--project`", "never pass `--machine`", "never run `uninstall`", 'From t3-phone-answers use only "On an event" and "Answering"', "To turn phone answers on or off, or pause them, say: \"That's for T3 Tots.\""])
-    assert.ok(pasted.includes(w), `the pasted project T3 Tots rules say: ${w}`);
+    assert.ok(pasted.includes(w), `the pasted rules say: ${w}`);
 });
 
-test("templates: each kind's routine prompt points at a section that exists", () => {
+test("the routine prompt points at \"On an event\", which builds on t3-phone-answers for this project only", () => {
   const prompts = between("## Routine prompt", "## On an event").match(/^> .*$/gm);
-  assert.equal(prompts.length, 2);
-  assert.match(prompts[0], /for the T3 project "<project>"\. Follow t3-project-bot-setup "On an event" for that project only\.$/);
-  assert.match(prompts[1], /You are that project's T3 Tots: follow t3-phone-answers "On an event" for that project only/);
-  assert.match(SKILL, /^## On an event \(routine runs\)$/m);
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /for the T3 project "<project>"\. You are that project's T3 Tots: follow t3-project-bot-setup "On an event" for that project only\.$/);
+  const on = between("## On an event (routine runs)", "## Remove");
+  for (const w of ['Handle each event as t3-phone-answers "On an event" says', "ignoring case and spaces at either end", "In a `thread.failed.batch`, keep only the entries in `failures` for this project",
+    "Skip an event whose `eventId` you already handled", "propose the next step as 2 or 3 choices with your recommendation"]) assert.ok(on.includes(w), w);
   assert.match(fs.readFileSync(path.join(ROOT, "skills", "t3-phone-answers", "SKILL.md"), "utf8"), /^## On an event \(routine runs\)$/m);
 });
 
-test("make a project bot: fill and show, get a yes, then create with a tool or paste steps; the new bot runs Setup itself; upgrade keeps the route", () => {
-  const make = between("## Make a project bot (T3 Tots)", "## Project bot templates");
-  const order = ["**Kind and values (read-only).**", "**Fill and show.**", "Ask for a yes.", "**Create (after the yes).**", "If it has none, give the user these steps", "**Hand over.**", "**Upgrade a notifier to a project T3 Tots.**"];
+test("make a project bot: collect, fill and show, get a yes, then create with a tool or paste steps; the new bot runs Setup itself", () => {
+  const make = between("## Make a project bot (T3 Tots)", "## Project bot template");
+  const order = ["**Values (read-only).**", "**Fill and show.**", "Ask for a yes.", "**Create (after the yes).**", "If it has none, give the user these steps", "**Hand over.**"];
   const at = order.map((s) => make.indexOf(s));
   assert.ok(at.every((i) => i >= 0), order.filter((_, i) => at[i] < 0).join(", "));
   assert.deepEqual([...at].sort((a, b) => a - b), at, "the steps come in this order");
   assert.match(make, /T3 Tots never runs "Setup" for the new bot/);
   assert.match(make, /check that no `\{` is left/);
-  assert.match(make, /The routine's URL and key stay the same, so the route doesn't change: no Terminal window and no restart/);
 });
