@@ -215,7 +215,7 @@ async function setupRoute(name) {
   routes[name] = { url, headers };
   try { compileRoutes(routes); } catch (err) { die("BAD_LISTEN_CONFIG", `listen.json ${err.message}; nothing was saved`); }
   saveConf({ ...old, routes });
-  console.log(`saved listen.json (route "${clean(name)}": url ${maskUrl(url)}, ${Object.keys(headers).length} header(s); routes: ${routeNames(compileRoutes(routes))}). ${restart}`);
+  console.log(`saved listen.json (route "${clean(name)}": url ${maskUrl(url)}, ${Object.keys(headers).length} header(s); routes: ${routeNames(compileRoutes(routes))}). Test it with: node "${self}" test --project "${clean(name)}". ${restart}`);
 }
 
 // ---------- T3 connection (same discovery as t3ctl) ----------
@@ -848,12 +848,31 @@ function status() {
   let tail = ""; try { tail = fs.readFileSync(LOG, "utf8").trim().split("\n").slice(-3).join("\n"); } catch {}
   console.log(`autostart: ${inst}\nrunning: ${running ? `yes (pid ${pid})` : "no"}\nconfig: ${fs.existsSync(CONF) ? "listen.json present" : "no listen.json yet"}\napprovals: ${approvalsLine(readJSON(CONF, {}).approvals === true, /--approvals\b/.test(serviceArgs()))}\nfilters: ${filtersLine((readJSON(CONF, {}) || {}).filters)}${(readJSON(CONF, {}) || {}).routes !== undefined ? `\nroutes: ${routesLine(readJSON(CONF, {}).routes)}` : ""}\nlistener settings: ${settingsLine(readJSON(CONF, {}) || {})}\nopen questions sent: ${open}${tail ? `\nlast log lines:\n${tail}` : ""}`);
 }
+// test [--project name | --all]: one test event per webhook. --project sends it the way that project's events go (its route, else
+// url); --all sends one to url and one to each route. It says which webhook answered, never its url or key, and notes a name that
+// matches no T3 project right now (when T3 can be asked), since events go by project title.
+async function t3ProjectTitles() { // best effort: null when T3 isn't running here or there's no token
+  const ep = endpoint(); if (!ep || !ep.token) return null;
+  try { const r = await fetch(`${ep.base}/api/orchestration/shell`, { headers: ep.H, signal: AbortSignal.timeout(3000) }); return r.ok ? ((await r.json()).projects || []).map((p) => p.title) : null; } catch { return null; }
+}
 async function test() {
-  C = loadConfig(); const e = { event: "test", machine: C.machine, threadId: "test", title: "t3listen test", project: null, requestId: "test-" + Date.now(), kind: "test" };
-  if (DRY) { console.log("DRY-RUN payload " + JSON.stringify({ ...e, text: `t3listen test from ${C.machine}` })); return; }
-  const r = await post({ ...e, text: `t3listen test from ${C.machine}: the webhook works`, sentAt: new Date().toISOString() });
-  if (!r.ok) die(r.status ? "WEBHOOK_REJECTED" : "WEBHOOK_UNREACHABLE", r.status ? `HTTP ${r.status}${r.status === 401 || r.status === 403 ? " (check the key)" : ""}${r.body ? `: ${r.body}` : ""}` : r.body);
-  console.log(`OK: webhook answered HTTP ${r.status}`);
+  C = loadConfig(); const ds = destsOf(C), q = String(optv("--project") || "").trim(), all = flag("--all");
+  if ((flag("--project") || argv.some((a) => a.startsWith("--project="))) && !q) die("USAGE", "test [--project <T3 project name> | --all]");
+  const targets = all ? ds.map((d) => d.name) : [q || null], titles = all || q ? await t3ProjectTitles() : null;
+  let failed = null;
+  for (const [i, project] of targets.entries()) {
+    const e = { event: "test", machine: C.machine, threadId: "test", title: "t3listen test", project, requestId: `test-${Date.now()}${i ? `-${i}` : ""}`, kind: "test" }, d = destFor(e);
+    const where = d.name !== null ? `route "${clean(d.name)}"` : project ? `webhook (no route for "${clean(project)}", so url)` : "webhook";
+    if (project && titles && !titles.some((t) => routeKey(t) === routeKey(project))) console.log(`note: no T3 project is named "${clean(project)}" right now, so no event goes ${d.name !== null ? "to this route" : "there"}; check the spelling`);
+    if (DRY) { console.log(`DRY-RUN payload${via(e)} ` + JSON.stringify({ ...e, text: `t3listen test from ${C.machine}` })); continue; }
+    const r = await post({ ...e, text: `t3listen test from ${C.machine}${project ? ` for project "${clean(project)}"` : ""}: the webhook works`, sentAt: new Date().toISOString() });
+    if (r.ok) { console.log(`OK: ${where} answered HTTP ${r.status}`); continue; }
+    const code = r.status ? "WEBHOOK_REJECTED" : "WEBHOOK_UNREACHABLE", why = r.status ? `HTTP ${r.status}${r.status === 401 || r.status === 403 ? " (check the key)" : ""}${r.body ? `: ${r.body}` : ""}` : r.body;
+    if (targets.length === 1) die(code, d.name === null ? why : `${where}: ${why}`);
+    console.error(`${code}: ${where}: ${why}`); failed = code;
+  }
+  if (failed) process.exit(1);
+  if (!all && !q && ds.length > 1) console.log(`listen.json also has ${ds.length - 1} route(s) (${routeNames(C.routes)}): test one with --project <name>, or every webhook with --all`);
 }
 
 async function previewFinish() { // print the run-end event the listener would send for a thread's latest ended run; posts nothing, saves nothing
@@ -887,13 +906,14 @@ async function previewFinish() { // print the run-end event the listener would s
   }
   cleanEvent(e); e.text = summary(e);
   if (e.event === "thread.failed" && C.repeatFailureMs > 0 && repeatCheck(repeatsHere(((readJSON(STATE, {}) || {}).failRepeat || {})[t.id], destFor(e)), e, Date.now(), C.repeatFailureMs, e.delegated && !!usageLimitFields(t, run)).hold) console.log("would hold back: the same error as this thread's last sent failure, inside repeatFailureHours");
+  if (destsOf(C).length > 1) { const d = destFor(e); console.log(`would send to: ${d.name !== null ? `route "${clean(d.name)}"` : e.project ? `url (project "${clean(e.project)}" has no route)` : "url (no project)"}`); }
   console.log("PREVIEW payload (not sent) " + JSON.stringify(e, null, 1));
 }
 
 const USAGE = `t3listen [run] [--dry-run] [--once [--timeout s]] [--approvals] [--log] [--verbose]   follow T3 and POST question events to the webhook
 t3listen setup [--machine name]   read the webhook URL (line 1) and 'Name: value' header lines from stdin into listen.json (private)
 t3listen setup --project name [--remove]   the same for one T3 project's own webhook (listen.json "routes"), or remove it
-t3listen test [--dry-run]         send one test event to the webhook
+t3listen test [--project name | --all] [--dry-run]   send one test event to the webhook (that project's, or every one)
 t3listen preview-finish --thread id|title   print the run-end event for a thread's latest ended run (sends nothing)
 t3listen install [--approvals] | uninstall | status   start at login (macOS LaunchAgent, Windows logon task, Linux systemd --user)`;
 if (require.main !== module) module.exports = { keepForRetry, refillFromState, MAX_RETRY_QUEUE, pickThread, idLike, systemdUnit, localTime, approvalsLine, staleMinutes, RED, clean, cleanEvent, summary, requestInfo, endedAt, tickLastAlive, catchUpThreads, afterSnapshotListen, usageLimitFields, shellReadyToArm, canArmResume, compileFilters, filterSkip, filterDecision, filtersLine, catchUpSince, reliability, settingsLine, failureKey, repeatCheck, waveDelay, batchEvent };

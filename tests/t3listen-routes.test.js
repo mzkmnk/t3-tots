@@ -294,7 +294,7 @@ test("setup --project: adds a route, keeps the rest of listen.json, prints neith
   try {
     const r = runSetup(dir, ["--project", "mobile-app"], "https://example.com/hooks/mobile-hidden-path\nAuthorization: Bearer mobile-hidden-key\n");
     assert.equal(r.code, 0, r.out);
-    assert.match(r.out, /^saved listen\.json \(route "mobile-app": url https:\/\/example\.com\/\*\*\*\*, 1 header\(s\); routes: "mobile-app"\)\. The running listener uses the change after a restart: node ".*t3listen" install/);
+    assert.match(r.out, /^saved listen\.json \(route "mobile-app": url https:\/\/example\.com\/\*\*\*\*, 1 header\(s\); routes: "mobile-app"\)\. Test it with: node ".*t3listen" test --project "mobile-app"\. The running listener uses the change after a restart: node ".*t3listen" install/);
     assert.ok(!/hidden/.test(r.out), r.out);
     const c = conf(dir);
     assert.deepEqual(c.routes, { "mobile-app": { url: "https://example.com/hooks/mobile-hidden-path", headers: { Authorization: "Bearer mobile-hidden-key" } } });
@@ -341,4 +341,104 @@ test("setup --project: refuses without a main webhook, a name or a good url, and
     assert.deepEqual([c.url, c.headers], ["https://example.com/hooks/new-main", { Authorization: "Bearer new-main-key" }]);
     assert.deepEqual(c.routes, { "mobile-app": { url: "https://example.com/m", headers: { Authorization: "Bearer m-key" } } }, "the main webhook's setup keeps the routes");
   } finally { for (const d of [empty, dir]) fs.rmSync(d, { recursive: true, force: true }); }
+});
+
+// ---------- checking routes: test --project / --all, preview-finish, and the by-hand steps in docs/routes/VERIFY.md ----------
+const runTool = (f, args, env = {}) => new Promise((done) => cp.execFile(process.execPath, [path.join(f.dir, "t3listen"), ...args],
+  { env: { ...process.env, T3_HOME: path.join(f.dir, "t3"), ...env } }, (err, out, errOut) => done({ code: err ? err.code : 0, out: out + errOut })));
+const TWO_ROUTES = (f) => ({ headers: { Authorization: TOP_KEY }, routes: { "iOS-App": { url: f.hookUrl("/ios"), headers: { Authorization: ROUTE_KEY } }, "old-app": { url: f.hookUrl("/old") } } });
+
+test("test --project sends the way that project's events go; --all tests every webhook; a name T3 doesn't have is noted", async () => {
+  const f = await routedFake();
+  try {
+    f.writeConfig(TWO_ROUTES(f));
+    let r = await runTool(f, ["test", "--project", "ios-app"]);
+    assert.equal(r.code, 0, r.out); assert.equal(r.out, 'OK: route "iOS-App" answered HTTP 200\n');
+    assert.deepEqual(f.hits.map((h) => [h.path, h.e.event, h.e.project, h.headers.authorization]), [["/ios", "test", "ios-app", ROUTE_KEY]]);
+    r = await runTool(f, ["test", "--project=web"]);
+    assert.equal(r.code, 0, r.out);
+    assert.equal(r.out, 'note: no T3 project is named "web" right now, so no event goes there; check the spelling\nOK: webhook (no route for "web", so url) answered HTTP 200\n');
+    assert.deepEqual([f.hits.at(-1).path, f.hits.at(-1).headers.authorization], ["/hook", TOP_KEY]);
+    r = await runTool(f, ["test", "--project", "proj"]); assert.equal(r.out, 'OK: webhook (no route for "proj", so url) answered HTTP 200\n', "a T3 project without a route goes to url, no note");
+    f.hits.length = 0;
+    r = await runTool(f, ["test", "--all"]);
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(f.hits.map((h) => [h.path, h.e.project]), [["/hook", null], ["/ios", "iOS-App"], ["/old", "old-app"]]);
+    assert.equal(r.out, 'OK: webhook answered HTTP 200\nOK: route "iOS-App" answered HTTP 200\nnote: no T3 project is named "old-app" right now, so no event goes to this route; check the spelling\nOK: route "old-app" answered HTTP 200\n');
+    f.hits.length = 0;
+    r = await runTool(f, ["test"]);
+    assert.equal(r.out, 'OK: webhook answered HTTP 200\nlisten.json also has 2 route(s) ("iOS-App", "old-app"): test one with --project <name>, or every webhook with --all\n');
+    assert.deepEqual(f.hits.map((h) => h.path), ["/hook"]);
+    assert.equal(new Set(f.hits.map((h) => h.e.requestId)).size, f.hits.length);
+  } finally { await f.close(); }
+});
+
+test("test --all: a refusing route is named with its reply redacted, the others are still tested, and it exits 1; --dry-run sends nothing", async () => {
+  const f = await routedFake();
+  try {
+    f.writeConfig(TWO_ROUTES(f));
+    f.setHookStatus((e, req) => (req.url === "/ios" ? { status: 401, body: `unknown key ${ROUTE_KEY} at ${f.hookUrl("/ios")}` } : 200));
+    let r = await runTool(f, ["test", "--all"]);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /^WEBHOOK_REJECTED: route "iOS-App": HTTP 401 \(check the key\): unknown key \[redacted\] at \[redacted\]$/m);
+    assert.equal((r.out.match(/^OK: /gm) || []).length, 2);
+    r = await runTool(f, ["test", "--project", "IOS-APP"]);
+    assert.equal(r.code, 1); assert.match(r.out, /^WEBHOOK_REJECTED: route "iOS-App": HTTP 401/m);
+    assert.ok(!r.out.includes("ios-route-key") && !r.out.includes(f.hookUrl("/ios")));
+    f.hits.length = 0;
+    r = await runTool(f, ["test", "--all", "--dry-run"]);
+    assert.equal(r.code, 0, r.out); assert.deepEqual(f.hits, [], "a dry run posts nothing");
+    assert.deepEqual(r.out.split("\n").filter((x) => x.startsWith("DRY-RUN")).map((x) => x.slice(0, x.indexOf("{"))), ["DRY-RUN payload ", 'DRY-RUN payload (route "iOS-App") ', 'DRY-RUN payload (route "old-app") ']);
+    assert.equal((await runTool(f, ["test", "--project"])).code, 1);
+  } finally { await f.close(); }
+});
+
+test("test and preview-finish without routes print exactly what they did before", async () => {
+  const f = await fakeT3.startFake();
+  try {
+    assert.deepEqual(await runTool(f, ["test"]), { code: 0, out: "OK: webhook answered HTTP 200\n" });
+    f.setThread(failedT("A", "r1"), { runs: [failRun("r1")], turnItems: [{ type: "error", runId: "r1", text: "boom" }] });
+    const r = await runTool(f, ["preview-finish", "--thread", "A"]);
+    assert.equal(r.code, 0, r.out); assert.match(r.out, /^PREVIEW payload \(not sent\) \{/); assert.doesNotMatch(r.out, /would send to/);
+  } finally { await f.close(); }
+});
+
+test("preview-finish names the webhook a thread's run end would go to", async () => {
+  const f = await routedFake();
+  try {
+    f.setThread({ ...idleT("I", "I1", "p2") }, { runs: [{ id: "I1", status: "completed", startedAt: now(), completedAt: now() }], turnItems: [{ type: "assistant_message", runId: "I1", text: "Done." }] });
+    f.setThread({ ...idleT("W", "W1", "p1") }, { runs: [{ id: "W1", status: "completed", startedAt: now(), completedAt: now() }], turnItems: [{ type: "assistant_message", runId: "W1", text: "Done." }] });
+    f.setThread({ ...idleT("N", "N1", "p9") }, { runs: [{ id: "N1", status: "completed", startedAt: now(), completedAt: now() }], turnItems: [] });
+    const lineFor = async (id) => { const r = await runTool(f, ["preview-finish", "--thread", id]); assert.equal(r.code, 0, r.out); return r.out.split("\n").find((x) => x.startsWith("would send to")); };
+    assert.equal(await lineFor("I"), 'would send to: route "iOS-App"');
+    assert.equal(await lineFor("W"), 'would send to: url (project "proj" has no route)');
+    assert.equal(await lineFor("N"), "would send to: url (no project)");
+    assert.deepEqual(f.hits, [], "a preview sends nothing");
+  } finally { await f.close(); }
+});
+
+test("by hand (docs/routes/VERIFY.md): dummy webhooks, setup --project and test --all show each test at its own webhook with its own key", async () => {
+  const dummy = cp.spawn(process.execPath, [path.join(__dirname, "dummy-webhook.js"), "main", "mobile-app"], { stdio: ["ignore", "pipe", "pipe"] });
+  let out = ""; dummy.stdout.on("data", (d) => (out += d)); dummy.stderr.on("data", (d) => (out += d));
+  const until = async (pred, what) => { const end = Date.now() + 8000; while (!pred()) { if (Date.now() > end) throw new Error(`timed out waiting for ${what}\n${out}`); await fakeT3.sleep(40); } };
+  const dir = setupDir(null);
+  try {
+    await until(() => /^mobile-app: http/m.test(out), "the dummy webhooks");
+    const url = (n) => out.match(new RegExp(`^${n}: (\\S+)$`, "m"))[1];
+    assert.equal(runSetup(dir, ["--machine", "m"], `${url("main")}\nAuthorization: Bearer dummy-main-AAAA\n`).code, 0);
+    let r = runSetup(dir, ["--project", "mobile-app"], `${url("mobile-app")}\nAuthorization: Bearer dummy-mobile-BBBB\n`);
+    assert.equal(r.code, 0, r.out); assert.ok(!r.out.includes("BBBB"));
+    const tool = (args, env = {}) => cp.spawnSync(process.execPath, [path.join(dir, "t3listen"), ...args], { encoding: "utf8", env: { ...process.env, T3_HOME: path.join(dir, "no-t3"), T3LISTEN_LABEL: "t3tots-verify-test", ...env } });
+    const st = tool(["status"]);
+    assert.match(st.stdout, /^routes: "mobile-app" \(1 header\); other projects go to url$/m); assert.match(st.stdout, /^running: no$/m);
+    r = tool(["test", "--all"]); assert.equal(r.status, 0, r.stdout + r.stderr);
+    r = tool(["test", "--project", "some-other-project"]); assert.equal(r.status, 0);
+    await until(() => (out.match(/^\[/gm) || []).length === 3, "three tests at the dummy webhooks");
+    const seen = out.split("\n").filter((x) => x.startsWith("["));
+    assert.deepEqual(seen, [
+      '[main] test project=null title="t3listen test" auth=****AAAA',
+      '[mobile-app] test project="mobile-app" title="t3listen test" auth=****BBBB',
+      '[main] test project="some-other-project" title="t3listen test" auth=****AAAA',
+    ]);
+  } finally { dummy.kill(); fs.rmSync(dir, { recursive: true, force: true }); }
 });

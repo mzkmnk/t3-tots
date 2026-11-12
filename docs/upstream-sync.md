@@ -54,7 +54,7 @@ git rebase --update-refs main
 
 衝突しやすいのは次の場所です。
 
-- `tools/t3listen`: `post()` の冒頭と fetch の行、末尾の `module.exports` の行。
+- `tools/t3listen`: `post()` の冒頭と fetch の行、`loadConfig()` の return の2行目（`routes: configRoutes(c.routes)` を足した行）。upstream の #41 を取り込むときはこの2か所になります。#41 の `post(e, { config, state, ... })` では fetch の前に `const d = destFor(e, config, state);` を置いて `send(d.url, ... ...d.headers)` にし、return の行は両方の追加（`routes: configRoutes(c.routes)` と `...configPresence(c)`）を残します。この解き方で #41 のテストも含めて全部通ることを、使い捨ての worktree で確かめています（2026-11-12）。
 - `manifest.json` と `skills/t3-install-tools/SKILL.md` の `PINNED`: ファイルの sha256 なので、手で直さず作り直す。
 
 ```sh
