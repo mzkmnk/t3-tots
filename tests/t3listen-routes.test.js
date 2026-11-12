@@ -1,4 +1,6 @@
-// t3listen destinations: each webhook has its own retry queue, failure wave and repeat-hold records (tools/t3listen "destinations").
+// t3listen routes: each webhook (destination) has its own retry queue, failure wave and repeat-hold records; listen.json "routes"
+// sends a project's events to its own webhook; setup --project, test --project / --all and preview-finish.
+// Run: node --test tests/t3listen-routes.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("path");

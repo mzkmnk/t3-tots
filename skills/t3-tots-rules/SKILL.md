@@ -174,7 +174,7 @@ Scripts print these words. Relay them in plain words, not as errors. This is the
 | `USAGE` | A flag that needs a value got none (for example `--from --to dir`). Nothing ran. Give the value, as `--key=value` if it starts with `--` |
 | `NO_USAGE_CACHE` | Ask the user to open T3's Usage view once |
 | `AMBIGUOUS`, `NO_GOOD_MATCH` | See "Finding a thread". From `t3ctl` or `t3listen preview-finish`, several threads, projects or open approvals match: it lists them; ask which, or pass the id (or the project folder, or `--request <full id>`) |
-| `NOT_FOUND` | No thread matches. List the closest ones and ask. If it ends with "T3's archived threads couldn't be checked", the search skipped archived threads, so retry once before saying the thread doesn't exist |
+| `NOT_FOUND` | No thread matches. List the closest ones and ask. If it ends with "T3's archived threads couldn't be checked", the search skipped archived threads, so retry once before saying the thread doesn't exist. From `t3listen setup --project <name> --remove`: there is no route by that name; check the `routes:` line of `t3listen status` |
 | `TOOLS_INCOMPLETE` | A helper file is missing from the tools folder. Reinstall with t3-install-tools |
 | `NOT_PENDING` | That question was already answered or closed |
 | `NOT_ANSWERABLE` | Its run ended, so it can't be answered. Offer a follow-up instead |
@@ -185,7 +185,7 @@ Scripts print these words. Relay them in plain words, not as errors. This is the
 | `NOT_LIMITED` | The thread isn't stopped on a usage limit, so there is nothing to resume |
 | `SENT_UNCONFIRMED` | Sent, but T3 still shows it open. Check `t3ctl pending` |
 | `DELIVERY_FIXED`, `QUEUE_HELD`, `SEND_STUCK` | See "Sending into threads" |
-| `NO_LISTEN_CONFIG`, `BAD_LISTEN_CONFIG`, `BAD_URL`, `BAD_HEADER` | `listen.json` is missing or wrong. Run `t3listen setup` again |
+| `NO_LISTEN_CONFIG`, `BAD_LISTEN_CONFIG`, `BAD_URL`, `BAD_HEADER` | `listen.json` is missing or wrong. Run `t3listen setup` again. For one project's route, see t3-project-bot-setup "Errors" instead |
 | `WEBHOOK_REJECTED` | The webhook refused the event. HTTP 401 or 403 means a wrong key, so redo setup. A rate-limit reply clears on its own; the listener keeps retrying |
 | `WEBHOOK_UNREACHABLE` | The webhook can't be reached. The listener keeps retrying |
 | `ALREADY_RUNNING` | A listener already runs there |

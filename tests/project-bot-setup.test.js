@@ -1,5 +1,6 @@
-// skills/t3-project-bot-setup: what it tells a notifier bot to run exists in t3listen, the output it quotes is what t3listen prints,
-// and its steps work end to end against a fake T3 and a dummy webhook (osascript and install are left out: they touch the real Mac).
+// skills/t3-project-bot-setup: the t3listen commands it gives exist and can't replace the main webhook, the output it quotes is what
+// t3listen prints, its steps work against a fake T3 and a dummy webhook (osascript and install are left out: they touch the real Mac),
+// and its project bot templates fill cleanly. Run: node --test tests/project-bot-setup.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), path = require("path"), cp = require("child_process");
@@ -8,19 +9,19 @@ const ROOT = path.join(__dirname, ".."), SKILL = fs.readFileSync(path.join(ROOT,
 const T3LISTEN = fs.readFileSync(path.join(ROOT, "tools", "t3listen"), "utf8");
 const usage = cp.execFileSync(process.execPath, [path.join(ROOT, "tools", "t3listen"), "help"], { encoding: "utf8" });
 
-test("t3-project-bot-setup: frontmatter, listed in the manifest, no em dashes", () => {
+test("frontmatter, listed in the manifest, no em dashes", () => {
   const fm = SKILL.match(/^---\n([\s\S]*?)\n---\n/);
   assert.ok(fm, "starts with frontmatter");
   assert.match(fm[1], /^name: t3-project-bot-setup$/m);
   assert.match(fm[1], /Use for /);
-  assert.ok(!SKILL.includes("—"));
+  assert.ok(!SKILL.includes("\u2014"), "no em dashes");
   const check = "import importlib.machinery, importlib.util, sys; L = importlib.machinery.SourceFileLoader('s', sys.argv[1]); m = importlib.util.module_from_spec(importlib.util.spec_from_loader('s', L)); L.exec_module(m); print(m.frontmatter_problem('t3-project-bot-setup', open(sys.argv[2], encoding='utf-8').read()))";
   assert.equal(cp.execFileSync("python3", ["-I", "-c", check, path.join(ROOT, "scripts", "sync-skills"), path.join(ROOT, "skills", "t3-project-bot-setup", "SKILL.md")], { encoding: "utf8" }).trim(), "None", "scripts/sync-skills accepts its frontmatter");
   const m = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
   assert.ok(m.files.some((f) => f.path === "skills/t3-project-bot-setup/SKILL.md" && f.dest === "t3-project-bot-setup/SKILL.md" && f.kind === "skill"));
 });
 
-test("t3-project-bot-setup: every t3listen command it gives exists, and none can replace the main webhook", () => {
+test("every t3listen command it gives exists, and none can replace the main webhook", () => {
   // commands the skill tells the bot to run; one named in a "never ..." sentence is a warning, not a step
   const sentence = (i) => SKILL.slice(Math.max(SKILL.lastIndexOf(". ", i), SKILL.lastIndexOf("\n", i)) + 1, i);
   const cmds = [...SKILL.matchAll(/`(node t3listen [^`]*)`/g)].filter((m) => !/\bnever\b/i.test(sentence(m.index))).map((m) => m[1]);
@@ -39,7 +40,7 @@ test("t3-project-bot-setup: every t3listen command it gives exists, and none can
   assert.match(usage, /^t3listen setup --project name \[--remove\]/m, "the version check in the skill looks for this line");
 });
 
-test("t3-project-bot-setup: the setup window starts setup only on a t3listen that knows routes, so an old one can't replace the main webhook", () => {
+test("the setup window starts setup only on a t3listen that knows routes, so an old one can't replace the main webhook", () => {
   // the window's command, built as AppleScript does: the literal parts from the skill, the folder and name through `quoted form of`
   const m = SKILL.match(/do script ("[^"]*") & quoted form of \(item 1 of argv\) & ("[^"]*") & quoted form of \(item 2 of argv\) & ("[^"]*")'/);
   assert.ok(m, "the skill's do script line");
@@ -63,7 +64,7 @@ test("t3-project-bot-setup: the setup window starts setup only on a t3listen tha
     assert.deepEqual(Object.keys(c.routes), [name], "the name arrives as typed: no $( ) or backquote ran");
   } finally { for (const d of [old, now]) fs.rmSync(d, { recursive: true, force: true }); }
 });
-test("t3-project-bot-setup: the output it quotes is what t3listen prints", () => {
+test("the output it quotes is what t3listen prints", () => {
   const quoted = ['config: no listen.json yet', 'autostart: not installed', 'running: yes', 'installed with --approvals', 'routes:', 'routes: invalid',
     'OK: route "', 'no route for "', 'note: no T3 project is named "', 'saved listen.json (route "', 'removed route "', 'its events go to url again',
     'T3 Tots listener setup for project "', 'Line 1: Webhook URL starting https://', 'Line 2: Authorization header starting Authorization:', 'nothing was saved'];
@@ -74,7 +75,7 @@ test("t3-project-bot-setup: the output it quotes is what t3listen prints", () =>
   for (const q of inCode) assert.ok(T3LISTEN.includes(q), `t3listen no longer prints ${q}`);
 });
 
-test("t3-project-bot-setup, end to end: the skill's checks, setup, test, status and remove against a fake T3 and a dummy webhook", async () => {
+test("end to end: the skill's checks, setup, test, status and remove against a fake T3 and a dummy webhook", async () => {
   const f = await fakeT3.startFake();
   try {
     fs.copyFileSync(path.join(ROOT, "tools", "t3ctl"), path.join(f.dir, "t3ctl"));
@@ -160,7 +161,7 @@ test("templates: each kind's skills exist with t3-tots-rules first; a T3 CLI ski
   assert.match(part("Project T3 Tots"), /t3code-cli\) only if this environment has one/);
 });
 
-test("templates: shared rules need the user's OK for releases and money, keep secrets out, and the style gives 2 or 3 choices", () => {
+test("templates: shared rules need the user's yes for releases and money, keep secrets out, and the style gives 2 or 3 choices", () => {
   const rules = part("Shared rules");
   for (const w of ["push", "merge", "pull request", "TestFlight", "App Store Connect", "billing", "sign a build", "certificates", "Never delete threads",
     "Archive one only after the user's OK", "`token`", "`listen.json`", "`secrets/`", "`statev2.sqlite` only read-only", "Never put a key"]) assert.ok(rules.includes(w), w);
@@ -183,9 +184,9 @@ test("templates: each kind's routine prompt points at a section that exists", ()
   assert.match(fs.readFileSync(path.join(ROOT, "skills", "t3-phone-answers", "SKILL.md"), "utf8"), /^## On an event \(routine runs\)$/m);
 });
 
-test("make a project bot: fill and show, OK, then create with a tool or paste steps; the new bot runs Setup itself; upgrade keeps the route", () => {
+test("make a project bot: fill and show, get a yes, then create with a tool or paste steps; the new bot runs Setup itself; upgrade keeps the route", () => {
   const make = between("## Make a project bot (T3 Tots)", "## Project bot templates");
-  const order = ["**Kind and values (read only).**", "**Fill and show.**", "Ask for an OK.", "**Create (after the OK).**", "If it has none, give the user these steps", "**Hand over.**", "**Upgrade a notifier to a project T3 Tots.**"];
+  const order = ["**Kind and values (read-only).**", "**Fill and show.**", "Ask for a yes.", "**Create (after the yes).**", "If it has none, give the user these steps", "**Hand over.**", "**Upgrade a notifier to a project T3 Tots.**"];
   const at = order.map((s) => make.indexOf(s));
   assert.ok(at.every((i) => i >= 0), order.filter((_, i) => at[i] < 0).join(", "));
   assert.deepEqual([...at].sort((a, b) => a - b), at, "the steps come in this order");

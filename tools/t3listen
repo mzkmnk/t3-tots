@@ -15,6 +15,7 @@ const argv = process.argv.slice(2), cmd = argv[0] && !argv[0].startsWith("--") ?
 const optv = (f) => { // --key value or --key=value, like t3ctl
   const eq = argv.find((a) => a.startsWith(f + "=")); if (eq !== undefined) return eq.slice(f.length + 1) || undefined;
   const i = argv.indexOf(f); return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[i + 1] : undefined; };
+const given = (f) => argv.some((a) => a === f || a.startsWith(f + "=")); // --key or --key=..., with or without a value
 const DRY = flag("--dry-run"), ONCE = flag("--once"), TOLOG = flag("--log"), VERBOSE = flag("--verbose");
 function log(...a) {
   const line = `${new Date().toISOString()} ${a.join(" ")}`;
@@ -189,7 +190,7 @@ async function readWebhook(what) { // stdin: line 1 = webhook URL, then "Header-
 }
 function saveConf(c) { const tmp = CONF + ".part"; fs.writeFileSync(tmp, JSON.stringify(c, null, 1) + "\n", { mode: 0o600 }); fs.renameSync(tmp, CONF); lockDown(CONF); }
 async function setup() {
-  if (flag("--project") || argv.some((a) => a.startsWith("--project="))) return setupRoute(optv("--project"));
+  if (given("--project")) return setupRoute(optv("--project"));
   const { url, headers } = await readWebhook("");
   const old = readJSON(CONF, {}), c = { ...old, url, headers, machine: optv("--machine") || old.machine || os.hostname().replace(/\.local$/, ""), approvals: old.approvals === true, skipStaleMinutes: old.skipStaleMinutes ?? 1440 };
   saveConf(c);
@@ -857,7 +858,7 @@ async function t3ProjectTitles() { // best effort: null when T3 isn't running he
 }
 async function test() {
   C = loadConfig(); const ds = destsOf(C), q = String(optv("--project") || "").trim(), all = flag("--all");
-  if ((flag("--project") || argv.some((a) => a.startsWith("--project="))) && !q) die("USAGE", "test [--project <T3 project name> | --all]");
+  if (given("--project") && !q) die("USAGE", "test [--project <T3 project name> | --all]");
   const targets = all ? ds.map((d) => d.name) : [q || null], titles = all || q ? await t3ProjectTitles() : null;
   let failed = null;
   for (const [i, project] of targets.entries()) {
@@ -916,6 +917,5 @@ t3listen setup --project name [--remove]   the same for one T3 project's own web
 t3listen test [--project name | --all] [--dry-run]   send one test event to the webhook (that project's, or every one)
 t3listen preview-finish --thread id|title   print the run-end event for a thread's latest ended run (sends nothing)
 t3listen install [--approvals] | uninstall | status   start at login (macOS LaunchAgent, Windows logon task, Linux systemd --user)`;
-if (require.main !== module) module.exports = { keepForRetry, refillFromState, MAX_RETRY_QUEUE, pickThread, idLike, systemdUnit, localTime, approvalsLine, staleMinutes, RED, clean, cleanEvent, summary, requestInfo, endedAt, tickLastAlive, catchUpThreads, afterSnapshotListen, usageLimitFields, shellReadyToArm, canArmResume, compileFilters, filterSkip, filterDecision, filtersLine, catchUpSince, reliability, settingsLine, failureKey, repeatCheck, waveDelay, batchEvent };
+if (require.main !== module) module.exports = { keepForRetry, refillFromState, MAX_RETRY_QUEUE, pickThread, idLike, systemdUnit, localTime, approvalsLine, staleMinutes, RED, clean, cleanEvent, summary, requestInfo, endedAt, tickLastAlive, catchUpThreads, afterSnapshotListen, usageLimitFields, shellReadyToArm, canArmResume, compileFilters, filterSkip, filterDecision, filtersLine, catchUpSince, reliability, settingsLine, failureKey, repeatCheck, waveDelay, batchEvent, newDest, destsOf, destFor, repeatsHere, tagDest, compileRoutes, routeKey, routesLine, keyLines, maskUrl, maskHeader };
 else ({ run, setup, test, "preview-finish": previewFinish, install: async () => install(), uninstall: async () => uninstall(), status: async () => status() }[cmd] || (async () => console.log(USAGE)))().catch((e) => { console.error("error:", e.message); process.exit(1); });
-if (require.main !== module) Object.assign(module.exports, { newDest, destsOf, destFor, repeatsHere, tagDest, compileRoutes, routeKey, routesLine, keyLines, maskUrl, maskHeader });
