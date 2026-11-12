@@ -133,6 +133,30 @@ A `thread.failed.batch` event looks like this. Each entry in `failures` has the 
 
 `usageLimit`, `autoResumeSet`, `resumeAt` and `repeatsSuppressed` appear only when they apply, as on `thread.failed`. Each run in a batch is marked as reported, so a restart doesn't send it again. A failure still waiting in a wave, or still unsent, is resent once when the listener restarts; a reconnect to T3 doesn't send it twice. `node t3listen status` lists which of these settings are on. `node t3listen preview-finish --thread <id>` says when a failure would be held back as a repeat.
 
+### Routes (optional)
+
+Send one project's events to a webhook of its own, for example a routine that only looks after one app, and everything else to `url` as before. Without `routes` every event goes to `url`.
+
+```json
+{
+ "url": "https://...", "headers": { "Authorization": "..." },
+ "routes": {
+  "mobile-app": { "url": "https://...", "headers": { "Authorization": "..." } }
+ }
+}
+```
+
+- A key is a T3 project title. Case and spaces at either end don't count. An event of a project without a route, or of no project, goes to `url`.
+- A route sends only its own `headers`, never the top-level ones, so each webhook only sees its own key. A route without `headers` sends none.
+- Each webhook has its own retry queue, failure wave and repeat holds. A `thread.failed.batch` only lists the failures bound for the webhook it goes to, and a webhook that is down or refusing doesn't hold up another's queue or its catch-up after a restart.
+- A question's close goes to the webhook its open went to, even when its thread is gone by then, or when the question was sent before its project had a route.
+- A route's `url` follows the same rule as `url` (`https://`, or `http://` for localhost). A bad route stops the listener at startup with `BAD_LISTEN_CONFIG` and names the route, never its url. A key a route doesn't know is ignored and listed in `listen.log` and `status`.
+- Add or replace a route with `node t3listen setup --project "<project>"`: it reads the same two lines as `setup` (the route's Webhook URL, then its Authorization header), keeps everything else in `listen.json`, and shows only the URL's host, never the rest or the key. On a terminal each character shows as `*`. A route for the same project (case and spaces at either end don't count) is replaced. `node t3listen setup --project "<project>" --remove` removes it.
+- Check a route with `node t3listen test --project "<project>"`: it sends a test event the way that project's events go and says which webhook answered, and notes a name that matches no T3 project right now. `--all` tests every webhook. `node t3listen preview-finish --thread <id>` says which webhook a thread's run end would go to, and `--dry-run` names the route on each payload.
+- `node t3listen status` lists the routes by name and header count. The listener reads `listen.json` when it starts, so restart it after a change: `node t3listen install` (add `--approvals` if status says "installed with --approvals").
+- A listener older than routes ignores `routes` and sends everything to `url`, so update the tools before adding a route.
+- A bot for one project registers its own route with the [t3-project-bot-setup](skills/t3-project-bot-setup/SKILL.md) skill. Its template lets T3 Tots make that bot, a T3 Tots for that one project that runs its threads with you.
+
 ## Delegated mode and approvals
 
 Delegated mode starts only when you hand over control, for example "I'm away, keep it moving". The agent then answers routine questions, nudges stalled threads, and resumes threads after a usage limit.
@@ -162,6 +186,7 @@ Report issues in [SECURITY.md](SECURITY.md).
 
 - `scripts/check.sh`. Syntax, tests, manifest freshness, CRLF on the Windows wrappers, private-word scan. Never-ship words go one per line in `~/.config/t3-tots/private-words.txt` (do not commit it). No list fails the check. `T3TOTS_NO_PRIVATE_WORDS=1` skips it on purpose.
 - After changing a tool, add it to `TOOLS` in `scripts/make-manifest.py` and run that script. It rewrites `manifest.json` from `VERSION`.
+- `node tests/dummy-webhook.js <name> ...` starts local dummy webhooks that print what they get, to try `t3listen` routes without a real webhook.
 - `scripts/sync-skills --from <folder>` (or `T3TOTS_SKILLS_SRC`) copies live skills into `skills/`, scans for private details, and updates the manifest. It copies nothing if the scan fails.
 - Never decide an approval by reading its text. T3 often shows a description instead of the command. Approval decisions go through `approvalAuthority`.
 - Release only from a tag. Installers download by tag and check every hash.
