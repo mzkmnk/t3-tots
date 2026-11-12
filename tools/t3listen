@@ -144,20 +144,78 @@ function lockDown(f) {
   if (process.platform !== "win32") { fs.chmodSync(f, 0o600); return; }
   try { cp.execFileSync("icacls", [f, "/inheritance:r", "/grant:r", `${process.env.USERNAME}:F`], { stdio: "ignore" }); } catch { console.error("note: couldn't restrict listen.json permissions (icacls)"); }
 }
-async function setup() { // stdin: line 1 = webhook URL, then "Header-Name: value" lines (stops after an Authorization line, or at a blank line)
-  const lines = [], rl = require("readline").createInterface({ input: process.stdin, output: process.stdin.isTTY ? process.stderr : undefined, terminal: !!process.stdin.isTTY });
-  if (process.stdin.isTTY) process.stderr.write("T3 Tots listener setup: paste two lines from the routine panel, pressing Enter after each.\n  Line 1: Webhook URL starting https://\n  Line 2: Authorization header starting Authorization:\n");
-  for await (const l of rl) {
-    const t = l.trim().replace(/^POST\s+/i, ""); if (!t) { if (lines.length) break; else continue; }
-    lines.push(t); if (lines.length > 1 && /^authorization:/i.test(t)) break;
-    if (process.stdin.isTTY && lines.length === 1) process.stderr.write(/^https?:\/\//.test(t) ? "  got the URL. Now line 2 (Authorization: ...):\n" : "  that doesn't start with https:// - run setup again and paste the Webhook URL first.\n");
+// setup on a terminal reads raw keys and shows each character as *, so a webhook URL or key never appears on screen (or in a
+// screen share or the scrollback). Enter ends a line (\r\n counts once), Backspace deletes, Ctrl-C quits, Ctrl-D ends the input.
+function keyLines(st, chunk) { // st: { cur, cr } kept between chunks -> { lines, echo, quit, end }
+  const out = { lines: [], echo: "", quit: false, end: false };
+  for (const ch of String(chunk).replace(/\x1b\[20[01]~/g, "").replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b./g, "")) { // paste marks, arrows
+    if (ch === "\u0003") { out.quit = true; break; }
+    if (ch === "\n" && st.cr) { st.cr = false; continue; }
+    st.cr = ch === "\r";
+    if (ch === "\r" || ch === "\n") { out.lines.push(st.cur); st.cur = ""; out.echo += "\n"; }
+    else if (ch === "\u0004") { if (st.cur) out.lines.push(st.cur); st.cur = ""; out.end = true; break; }
+    else if (ch === "\u007f" || ch === "\b") { if (st.cur) { st.cur = [...st.cur].slice(0, -1).join(""); out.echo += "\b \b"; } }
+    else if (ch >= " ") { st.cur += ch; out.echo += "*"; }
   }
-  rl.close();
-  const url = lines.shift() || ""; if (!/^https:\/\//.test(url) && !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(url)) die("BAD_URL", "the first line must be the webhook URL (https://...)");
+  return out;
+}
+async function* ttyLines(input, echo) {
+  const st = { cur: "", cr: false }, ready = []; let wake = null, end = false;
+  const onData = (chunk) => {
+    const r = keyLines(st, chunk); echo.write(r.echo); ready.push(...r.lines); end = end || r.end;
+    if (r.quit) { echo.write("\n"); input.setRawMode(false); process.exit(130); }
+    if (wake) { wake(); wake = null; }
+  };
+  input.setRawMode(true); input.setEncoding("utf8"); input.on("data", onData); input.resume();
+  try { for (;;) { while (ready.length) yield ready.shift(); if (end) return; await new Promise((r) => (wake = r)); } }
+  finally { input.removeListener("data", onData); input.setRawMode(false); input.pause(); }
+}
+const maskUrl = (u) => { try { const x = new URL(u); return `${x.protocol}//${x.host}/****`; } catch { return "****"; } }; // the path and query often hold the key
+const maskHeader = (l) => { const m = l.match(/^([A-Za-z0-9-]+):/); return m ? `${m[1]}: ****` : "a line that isn't 'Name: value'"; };
+async function readWebhook(what) { // stdin: line 1 = webhook URL, then "Header-Name: value" lines (stops after an Authorization line, or at a blank line)
+  const tty = !!process.stdin.isTTY, lines = [];
+  const input = tty ? ttyLines(process.stdin, process.stderr) : require("readline").createInterface({ input: process.stdin, terminal: false });
+  if (tty) process.stderr.write(`T3 Tots listener setup${what}: paste two lines from the routine panel, pressing Enter after each. They show as ****.\n  Line 1: Webhook URL starting https://\n  Line 2: Authorization header starting Authorization:\n`);
+  for await (const l of input) {
+    const t = l.trim().replace(/^POST\s+/i, ""); if (!t) { if (lines.length) break; else continue; }
+    lines.push(t);
+    if (tty) process.stderr.write(lines.length > 1 ? `  got ${maskHeader(t)}\n` : /^https?:\/\//.test(t) ? `  got the URL (${maskUrl(t)}). Now line 2 (Authorization: ...):\n` : "  that doesn't start with https:// - run setup again and paste the Webhook URL first.\n");
+    if (lines.length > 1 && /^authorization:/i.test(t)) break;
+  }
+  if (!tty) input.close();
+  const url = lines.shift() || ""; if (!webhookUrl(url)) die("BAD_URL", "the first line must be the webhook URL (https://...)");
   const headers = {}; for (const l of lines) { const m = l.match(/^([A-Za-z0-9-]+):\s*(.+)$/); if (!m) die("BAD_HEADER", "header lines must look like 'Name: value'"); headers[m[1]] = m[2]; }
+  return { url, headers };
+}
+function saveConf(c) { const tmp = CONF + ".part"; fs.writeFileSync(tmp, JSON.stringify(c, null, 1) + "\n", { mode: 0o600 }); fs.renameSync(tmp, CONF); lockDown(CONF); }
+async function setup() {
+  if (flag("--project") || argv.some((a) => a.startsWith("--project="))) return setupRoute(optv("--project"));
+  const { url, headers } = await readWebhook("");
   const old = readJSON(CONF, {}), c = { ...old, url, headers, machine: optv("--machine") || old.machine || os.hostname().replace(/\.local$/, ""), approvals: old.approvals === true, skipStaleMinutes: old.skipStaleMinutes ?? 1440 };
-  const tmp = CONF + ".part"; fs.writeFileSync(tmp, JSON.stringify(c, null, 1) + "\n", { mode: 0o600 }); fs.renameSync(tmp, CONF); lockDown(CONF);
+  saveConf(c);
   console.log(`saved listen.json (url set, ${Object.keys(headers).length} header(s), machine "${c.machine}", approvals ${c.approvals ? "on" : "off"}). Test it with: node "${path.join(DIR, "t3listen")}" test`);
+}
+// setup --project <name> [--remove]: add, replace or remove one route in listen.json "routes"; everything else in the file is kept.
+// A route that names the same project (case and outer spaces don't count) is replaced. The url and key are never printed.
+async function setupRoute(name) {
+  const self = path.join(DIR, "t3listen"); name = String(name || "").trim();
+  if (!name) die("USAGE", "setup --project <T3 project name> [--remove]");
+  const old = readJSON(CONF, null); if (!old || !old.url) die("NO_LISTEN_CONFIG", `set up the main webhook first: node "${self}" setup`);
+  const routes = old.routes && typeof old.routes === "object" && !Array.isArray(old.routes) ? { ...old.routes } : {};
+  const same = Object.keys(routes).filter((k) => routeKey(k) === routeKey(name)), restart = `The running listener uses the change after a restart: node "${self}" install (add --approvals if status says "installed with --approvals").`;
+  if (flag("--remove")) {
+    if (!same.length) die("NOT_FOUND", `listen.json has no route for "${clean(name)}"`);
+    for (const k of same) delete routes[k];
+    const { routes: _, ...rest } = old; saveConf(Object.keys(routes).length ? { ...rest, routes } : rest);
+    console.log(`removed route "${clean(same[0])}" from listen.json; its events go to url again. Routes left: ${Object.keys(routes).length}. ${restart}`);
+    return;
+  }
+  const { url, headers } = await readWebhook(` for project "${clean(name)}"`);
+  for (const k of same) delete routes[k];
+  routes[name] = { url, headers };
+  try { compileRoutes(routes); } catch (err) { die("BAD_LISTEN_CONFIG", `listen.json ${err.message}; nothing was saved`); }
+  saveConf({ ...old, routes });
+  console.log(`saved listen.json (route "${clean(name)}": url ${maskUrl(url)}, ${Object.keys(headers).length} header(s); routes: ${routeNames(compileRoutes(routes))}). ${restart}`);
 }
 
 // ---------- T3 connection (same discovery as t3ctl) ----------
@@ -834,9 +892,10 @@ async function previewFinish() { // print the run-end event the listener would s
 
 const USAGE = `t3listen [run] [--dry-run] [--once [--timeout s]] [--approvals] [--log] [--verbose]   follow T3 and POST question events to the webhook
 t3listen setup [--machine name]   read the webhook URL (line 1) and 'Name: value' header lines from stdin into listen.json (private)
+t3listen setup --project name [--remove]   the same for one T3 project's own webhook (listen.json "routes"), or remove it
 t3listen test [--dry-run]         send one test event to the webhook
 t3listen preview-finish --thread id|title   print the run-end event for a thread's latest ended run (sends nothing)
 t3listen install [--approvals] | uninstall | status   start at login (macOS LaunchAgent, Windows logon task, Linux systemd --user)`;
 if (require.main !== module) module.exports = { keepForRetry, refillFromState, MAX_RETRY_QUEUE, pickThread, idLike, systemdUnit, localTime, approvalsLine, staleMinutes, RED, clean, cleanEvent, summary, requestInfo, endedAt, tickLastAlive, catchUpThreads, afterSnapshotListen, usageLimitFields, shellReadyToArm, canArmResume, compileFilters, filterSkip, filterDecision, filtersLine, catchUpSince, reliability, settingsLine, failureKey, repeatCheck, waveDelay, batchEvent };
 else ({ run, setup, test, "preview-finish": previewFinish, install: async () => install(), uninstall: async () => uninstall(), status: async () => status() }[cmd] || (async () => console.log(USAGE)))().catch((e) => { console.error("error:", e.message); process.exit(1); });
-if (require.main !== module) Object.assign(module.exports, { newDest, destsOf, destFor, repeatsHere, tagDest, compileRoutes, routeKey, routesLine });
+if (require.main !== module) Object.assign(module.exports, { newDest, destsOf, destFor, repeatsHere, tagDest, compileRoutes, routeKey, routesLine, keyLines, maskUrl, maskHeader });

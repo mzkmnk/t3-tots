@@ -256,3 +256,89 @@ test("routes, live: a bad route stops the listener at startup with BAD_LISTEN_CO
     assert.ok(!/hidden-path/.test(f.out));
   } finally { await f.close(); }
 });
+
+// ---------- setup --project: add, replace or remove a route without showing its url or key ----------
+test("setup on a terminal: each character shows as *, Enter ends a line, a paste of two lines is two lines, Ctrl-C quits", () => {
+  let st = { cur: "", cr: false };
+  let r = l.keyLines(st, "https://example.com/hidden-path\r");
+  assert.deepEqual(r.lines, ["https://example.com/hidden-path"]); assert.equal(r.echo, "*".repeat(31) + "\n"); assert.ok(!r.echo.includes("hidden"));
+  r = l.keyLines(st, "\nAuthorization: Bearer k"); assert.deepEqual(r.lines, [], "the \\n after a \\r is the same Enter");
+  r = l.keyLines(st, "x\u007fey\r\n"); assert.deepEqual(r.lines, ["Authorization: Bearer key"]); assert.equal(r.echo, "*\b \b**\n");
+  st = { cur: "", cr: false };
+  r = l.keyLines(st, "\x1b[200~https://example.com/a\nAuthorization: Bearer b\n\x1b[201~");
+  assert.deepEqual(r.lines, ["https://example.com/a", "Authorization: Bearer b"], "bracketed paste marks are dropped");
+  r = l.keyLines(st, "ab\x1b[Dc"); assert.equal(st.cur, "abc", "arrow keys are ignored");
+  assert.equal(l.keyLines({ cur: "", cr: false }, "abc\u0003def").quit, true);
+  r = l.keyLines({ cur: "", cr: false }, "abc\u0004"); assert.deepEqual([r.lines, r.end], [["abc"], true]);
+  assert.equal(l.maskUrl("https://user:pw@example.com/hidden/path?key=hidden"), "https://example.com/****", "no user, path or query");
+  assert.equal(l.maskUrl("not a url"), "****");
+  assert.equal(l.maskHeader("Authorization: Bearer hidden"), "Authorization: ****");
+});
+
+const fs = require("fs"), os = require("os"), cp = require("child_process");
+function setupDir(listen) { // a temp tools folder with a copy of t3listen and, if given, a listen.json
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "t3listen-setup-"));
+  fakeT3.copyTools(dir);
+  if (listen) fs.writeFileSync(path.join(dir, "listen.json"), JSON.stringify(listen), { mode: 0o600 });
+  return dir;
+}
+const runSetup = (dir, args, input = "") => {
+  const r = cp.spawnSync(process.execPath, [path.join(dir, "t3listen"), "setup", ...args], { input, encoding: "utf8", env: { ...process.env, T3_HOME: path.join(dir, "no-t3") } });
+  return { code: r.status, out: r.stdout + r.stderr };
+};
+const conf = (dir) => JSON.parse(fs.readFileSync(path.join(dir, "listen.json"), "utf8"));
+const MAIN = { url: "https://example.com/hooks/main-hidden", headers: { Authorization: "Bearer main-hidden-key" }, machine: "laptop", approvals: true, skipStaleMinutes: 60, filters: { resolved: false }, catchUpMinutes: 5 };
+
+test("setup --project: adds a route, keeps the rest of listen.json, prints neither the url nor the key", () => {
+  const dir = setupDir(MAIN);
+  try {
+    const r = runSetup(dir, ["--project", "mobile-app"], "https://example.com/hooks/mobile-hidden-path\nAuthorization: Bearer mobile-hidden-key\n");
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /^saved listen\.json \(route "mobile-app": url https:\/\/example\.com\/\*\*\*\*, 1 header\(s\); routes: "mobile-app"\)\. The running listener uses the change after a restart: node ".*t3listen" install/);
+    assert.ok(!/hidden/.test(r.out), r.out);
+    const c = conf(dir);
+    assert.deepEqual(c.routes, { "mobile-app": { url: "https://example.com/hooks/mobile-hidden-path", headers: { Authorization: "Bearer mobile-hidden-key" } } });
+    const { routes, ...rest } = c; assert.deepEqual(rest, MAIN, "the main webhook and every other setting are kept");
+    if (process.platform !== "win32") assert.equal(fs.statSync(path.join(dir, "listen.json")).mode & 0o777, 0o600);
+    assert.ok(!fs.existsSync(path.join(dir, "listen.json.part")));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("setup --project: the same project in other case replaces its route; --remove takes it out; the last one removes routes", () => {
+  const dir = setupDir(MAIN);
+  try {
+    assert.equal(runSetup(dir, ["--project", "mobile-app"], "https://example.com/a\nAuthorization: Bearer a-key\n").code, 0);
+    assert.equal(runSetup(dir, ["--project=web"], "http://localhost:8080/w\n\n").code, 0, "--project=name works, and a route can have no headers");
+    let r = runSetup(dir, ["--project", " Mobile-App "], "https://example.com/b\nAuthorization: Bearer b-key\n");
+    assert.equal(r.code, 0, r.out); assert.match(r.out, /routes: "web", "Mobile-App"\)/);
+    assert.deepEqual(conf(dir).routes, { web: { url: "http://localhost:8080/w", headers: {} }, "Mobile-App": { url: "https://example.com/b", headers: { Authorization: "Bearer b-key" } } });
+    r = runSetup(dir, ["--project", "MOBILE-APP", "--remove"]);
+    assert.equal(r.code, 0, r.out); assert.match(r.out, /^removed route "Mobile-App" from listen\.json; its events go to url again\. Routes left: 1\./);
+    assert.deepEqual(Object.keys(conf(dir).routes), ["web"]);
+    r = runSetup(dir, ["--project", "nope", "--remove"]);
+    assert.equal(r.code, 1); assert.match(r.out, /^NOT_FOUND: listen\.json has no route for "nope"/);
+    assert.equal(runSetup(dir, ["--project", "web", "--remove"]).code, 0);
+    assert.ok(!("routes" in conf(dir)), "no routes left: listen.json is back to its old shape");
+    const { routes, ...rest } = conf(dir); assert.deepEqual(rest, MAIN);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("setup --project: refuses without a main webhook, a name or a good url, and saves nothing; plain setup keeps routes", () => {
+  const empty = setupDir(null), dir = setupDir(MAIN);
+  try {
+    let r = runSetup(empty, ["--project", "mobile-app"], "https://example.com/a\n\n");
+    assert.equal(r.code, 1); assert.match(r.out, /^NO_LISTEN_CONFIG: set up the main webhook first/); assert.ok(!fs.existsSync(path.join(empty, "listen.json")));
+    r = runSetup(dir, ["--project"], "https://example.com/a\n\n"); assert.equal(r.code, 1); assert.match(r.out, /^USAGE: setup --project <T3 project name>/);
+    r = runSetup(dir, ["--project", "mobile-app"], "http://hooks.example.com/hidden-path\nAuthorization: Bearer hidden-key\n");
+    assert.equal(r.code, 1); assert.match(r.out, /^BAD_URL:/); assert.ok(!/hidden/.test(r.out));
+    r = runSetup(dir, ["--project", "mobile-app"], "https://example.com/a\nnot a header\n");
+    assert.equal(r.code, 1); assert.match(r.out, /^BAD_HEADER:/);
+    assert.deepEqual(conf(dir), MAIN, "nothing was saved");
+    assert.equal(runSetup(dir, ["--project", "mobile-app"], "https://example.com/m\nAuthorization: Bearer m-key\n").code, 0);
+    r = runSetup(dir, [], "https://example.com/hooks/new-main\nAuthorization: Bearer new-main-key\n");
+    assert.equal(r.code, 0, r.out); assert.match(r.out, /^saved listen\.json \(url set, 1 header\(s\), machine "laptop", approvals on\)/);
+    const c = conf(dir);
+    assert.deepEqual([c.url, c.headers], ["https://example.com/hooks/new-main", { Authorization: "Bearer new-main-key" }]);
+    assert.deepEqual(c.routes, { "mobile-app": { url: "https://example.com/m", headers: { Authorization: "Bearer m-key" } } }, "the main webhook's setup keeps the routes");
+  } finally { for (const d of [empty, dir]) fs.rmSync(d, { recursive: true, force: true }); }
+});
