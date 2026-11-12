@@ -155,6 +155,7 @@ Send one project's events to a webhook of its own, for example a routine that on
 - Check a route with `node t3listen test --project "<project>"`: it sends a test event the way that project's events go and says which webhook answered, and notes a name that matches no T3 project right now. `--all` tests every webhook. `node t3listen preview-finish --thread <id>` says which webhook a thread's run end would go to, and `--dry-run` names the route on each payload. In a checkout, `node tests/dummy-webhook.js <name> ...` starts local dummy webhooks that print what they get, to try routes without a real one.
 - `node t3listen status` lists the routes by name and header count. The listener reads `listen.json` when it starts, so restart it after a change: `node t3listen install` (add `--approvals` if status says "installed with --approvals").
 - A listener older than routes ignores `routes` and sends everything to `url`, so update the tools before adding a route.
+- A bot that only follows one project can register its own route with the [t3-project-setup](skills/t3-project-setup/SKILL.md) skill.
 
 ## Delegated mode and approvals
 
