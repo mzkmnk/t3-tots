@@ -66,8 +66,8 @@
    "path": "tools/t3listen",
    "dest": "t3listen",
    "kind": "tool",
-   "bytes": 76279,
-   "sha256": "5383aec68006fe57339da43168b7d138ba0d264abb69af620e823a94253aa360",
+   "bytes": 81233,
+   "sha256": "68e23a43b23289f79fa5921339dd07bae6a6221f0ec4270bb6767872e816447f",
    "targets": [
     "macos",
     "linux",
@@ -271,7 +271,7 @@
    "dest": "t3-install-tools/SKILL.md",
    "kind": "skill",
    "bytes": 29059,
-   "sha256": "e6f260e9c6eb9cd6b0b1dab5f5d5019322db3a5062c7bb3502e93fbb40f6eba0"
+   "sha256": "61faf50b3877885c783d5b26d591ad8ebcb3e95ceb6b165faf37ef6de45c2bc6"
   },
   {
    "path": "skills/t3-new-thread/SKILL.md",
@@ -284,8 +284,8 @@
    "path": "skills/t3-phone-answers/SKILL.md",
    "dest": "t3-phone-answers/SKILL.md",
    "kind": "skill",
-   "bytes": 12946,
-   "sha256": "4e2891dee587f130dbdade79d11776946cac29a6e61a675345e6a1b518401120"
+   "bytes": 13068,
+   "sha256": "975c824dd94574faaf1cb8d08fe46b86a7d3621fb8898ff718fb844061fdf1f0"
   },
   {
    "path": "skills/t3-pm-thread/SKILL.md",

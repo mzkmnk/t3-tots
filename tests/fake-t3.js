@@ -31,11 +31,16 @@ async function startFake(config = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "t3listen-fake-"));
   copyTools(dir);
   fs.writeFileSync(path.join(dir, "token"), "test-fixture");
-  const posts = [], commands = [], projects = [{ id: "p1", title: "proj" }], threads = new Map(), projections = new Map(), sockets = new Set();
+  const posts = [], hits = [], commands = [], projects = [{ id: "p1", title: "proj" }], threads = new Map(), projections = new Map(), sockets = new Set();
   let hookStatus = () => 200;
+  // hookStatus(e, req) -> a status, or { status, body }. posts: the events answered 200 (any path); hits: every POST with its path and headers
   const hook = http.createServer((req, res) => {
     let b = ""; req.on("data", (c) => (b += c));
-    req.on("end", () => { const e = JSON.parse(b), st = hookStatus(e); if (st === 200) posts.push(e); res.statusCode = st; res.end(st === 200 ? "ok" : "busy"); });
+    req.on("end", () => {
+      const e = JSON.parse(b), a = hookStatus(e, req), st = typeof a === "object" ? a.status : a;
+      hits.push({ path: req.url, headers: req.headers, e, status: st }); if (st === 200) posts.push(e);
+      res.statusCode = st; res.end(typeof a === "object" && a.body !== undefined ? a.body : st === 200 ? "ok" : "busy");
+    });
   });
   const t3 = http.createServer((req, res) => {
     const u = decodeURIComponent(req.url.split("?")[0]);
@@ -70,7 +75,9 @@ async function startFake(config = {}) {
 
   let child = null, out = "";
   const f = {
-    dir, posts, commands, threads, projections,
+    dir, posts, hits, commands, threads, projections, projects,
+    hookUrl: (p = "/hook") => `http://127.0.0.1:${hook.address().port}${p}`,
+    writeConfig(c) { fs.writeFileSync(path.join(dir, "listen.json"), JSON.stringify({ url: f.hookUrl(), headers: {}, machine: "m", ...c })); },
     get out() { return out; },
     setHookStatus(fn) { hookStatus = fn; },
     setThread(t, projection) { threads.set(t.id, { updatedAt: new Date().toISOString(), projectId: "p1", ...t }); if (projection) projections.set(t.id, projection); },

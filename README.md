@@ -133,6 +133,27 @@ A `thread.failed.batch` event looks like this. Each entry in `failures` has the 
 
 `usageLimit`, `autoResumeSet`, `resumeAt` and `repeatsSuppressed` appear only when they apply, as on `thread.failed`. Each run in a batch is marked as reported, so a restart doesn't send it again. A failure still waiting in a wave, or still unsent, is resent once when the listener restarts; a reconnect to T3 doesn't send it twice. `node t3listen status` lists which of these settings are on. `node t3listen preview-finish --thread <id>` says when a failure would be held back as a repeat.
 
+### Routes (optional)
+
+Send one project's events to a webhook of its own, for example a routine that only looks after one app, and everything else to `url` as before. Without `routes` every event goes to `url`.
+
+```json
+{
+ "url": "https://...", "headers": { "Authorization": "..." },
+ "routes": {
+  "mobile-app": { "url": "https://...", "headers": { "Authorization": "..." } }
+ }
+}
+```
+
+- A key is a T3 project title. Case and spaces at either end don't count. An event of a project without a route, or of no project, goes to `url`.
+- A route sends only its own `headers`, never the top-level ones, so each webhook only sees its own key. A route without `headers` sends none.
+- Each webhook has its own retry queue, failure wave and repeat holds. A `thread.failed.batch` only lists the failures bound for the webhook it goes to, and a webhook that is down or refusing doesn't hold up another's queue or its catch-up after a restart.
+- A question's close goes to the webhook its open went to, even when its thread is gone by then, or when the question was sent before its project had a route.
+- A route's `url` follows the same rule as `url` (`https://`, or `http://` for localhost). A bad route stops the listener at startup with `BAD_LISTEN_CONFIG` and names the route, never its url. A key a route doesn't know is ignored and listed in `listen.log` and `status`.
+- `node t3listen status` lists the routes by name and header count. The listener reads `listen.json` when it starts, so restart it after a change: `node t3listen install` (add `--approvals` if status says "installed with --approvals").
+- A listener older than routes ignores `routes` and sends everything to `url`, so update the tools before adding a route.
+
 ## Delegated mode and approvals
 
 Delegated mode starts only when you hand over control, for example "I'm away, keep it moving". The agent then answers routine questions, nudges stalled threads, and resumes threads after a usage limit.
