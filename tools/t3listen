@@ -200,16 +200,27 @@ function summary(e) {
 const answeredHere = (id) => { const m = readJSON(HERE, {}) || {}; return !!m[crypto.createHash("sha256").update(String(id)).digest("hex").slice(0, 16)]; };
 
 // ---------- delivery ----------
-let C, queue = [], delivered = 0;
+let C, delivered = 0;
+// ---------- destinations ----------
+// A destination is one webhook: its url and headers, its own retry queue and its own failure wave; repeat holds are judged per
+// destination too (repeatsHere). destFor(e) is the one place that picks where an event goes, and post() sends it there.
+// listen.json names one destination, its url and headers (name null).
+const newDest = (name, url, headers) => ({ name, url, headers: headers || {}, queue: [], wave: null });
+const destsOf = (config) => config.dests || (config.dests = [newDest(null, config.url, config.headers)]); // built once per config
+const destFor = (e, config = C) => destsOf(config)[0];
+// a failRepeat record made for a named destination carries its name in "to"; a record from another destination counts as none
+const repeatsHere = (rec, d) => (rec && (rec.to || null) === d.name ? rec : undefined);
+const tagDest = (rec, d) => { const { to, ...r } = rec; return d.name === null ? r : { ...r, to: d.name }; };
 const RETRYABLE = (st, body = "") => st === 408 || st === 429 || st >= 500 || /rate.?limit|too many|try again/i.test(body); // some webhook hosts send rate limits as 400
-function redact(s) { // never let the webhook URL or header values reach the log
-  s = String(s || ""); const secrets = [C && C.url, ...Object.values((C && C.headers) || {}).flatMap((v) => [v, ...String(v).split(/\s+/)])].filter((v) => v && String(v).length > 7);
+function redact(s) { // never let a webhook URL or header value reach the log
+  s = String(s || ""); const secrets = destsOf(C || {}).flatMap((d) => [d.url, ...Object.values(d.headers).flatMap((v) => [v, ...String(v).split(/\s+/)])]).filter((v) => v && String(v).length > 7);
   for (const v of secrets.sort((a, b) => String(b).length - String(a).length)) s = s.split(String(v)).join("[redacted]");
   return s.replace(/\s+/g, " ").trim().slice(0, 500);
 }
 async function post(e) { // one attempt; returns { ok, status, body, retry }
+  const d = destFor(e);
   try {
-    const r = await fetch(C.url, { method: "POST", headers: { "content-type": "application/json", "user-agent": "t3listen", ...C.headers }, body: JSON.stringify(e), signal: AbortSignal.timeout(20000) });
+    const r = await fetch(d.url, { method: "POST", headers: { "content-type": "application/json", "user-agent": "t3listen", ...d.headers }, body: JSON.stringify(e), signal: AbortSignal.timeout(20000) });
     if (r.ok) return { ok: true, status: r.status };
     let body = ""; try { body = await r.text(); } catch {}
     return { ok: false, status: r.status, body: redact(body), retry: RETRYABLE(r.status, body) };
@@ -236,10 +247,11 @@ function keepForRetry(q, st, item) {
   const s = stateFor(st, item.e); if (!s) return "dropped";
   (s.parked = s.parked || {})[item.e.event] = { e: item.e, rounds: item.rounds || 0, since: item.since }; return "parked";
 }
-function refillFromState(q, st, now) {
+function refillFromState(q, st, now, mine = () => true) { // mine(e): which saved events belong in q (its destination's)
   let moved = 0;
   for (const s of [...Object.values(st.sent), ...Object.values(st.finished)]) {
     for (const [name, p] of Object.entries(s.parked || {})) {
+      if (!mine(p.e)) continue;
       if (q.length >= MAX_RETRY_QUEUE) return moved;
       q.push({ e: p.e, rounds: p.rounds || 0, since: p.since || now }); delete s.parked[name]; moved++;
     }
@@ -248,7 +260,7 @@ function refillFromState(q, st, now) {
   return moved;
 }
 function retryLater(item) {
-  const how = keepForRetry(queue, S, item);
+  const how = keepForRetry(destFor(item.e).queue, S, item);
   if (how === "parked") { saveState(); log(`retry queue is full; ${item.e.event} ${ref(item.e).slice(-12)} is saved and retried when there is room`); }
   else if (how === "dropped") log(`retry queue is full and ${item.e.event} ${ref(item.e).slice(-12)} has no saved state, so it is dropped`);
 }
@@ -283,24 +295,23 @@ function batchEvent(items, machine) { // thread.failed events -> one thread.fail
     firstAt: at[0], lastAt: at.at(-1), firstAtLocal: localTime(at[0]), lastAtLocal: localTime(at.at(-1)),
     failures: items.map((e) => Object.fromEntries(Object.entries(e).filter(([k]) => !BATCH_DROP.has(k)))) };
 }
-let wave = null;
-function holdFailure(e, needsYou) { // -> true when the failure was held back or queued in a wave (it is sent later or not at all)
-  const now = Date.now();
-  if (wave && wave.items.some((x) => x.runId === e.runId)) return true;
+function holdFailure(e, needsYou) { // -> true when the failure was held back or queued in its destination's wave (sent later or not at all)
+  const now = Date.now(), d = destFor(e);
+  if (d.wave && d.wave.items.some((x) => x.runId === e.runId)) return true;
   if (C.repeatFailureMs > 0) {
-    const r = repeatCheck(S.failRepeat[e.threadId], e, now, C.repeatFailureMs, needsYou);
+    const r = repeatCheck(repeatsHere(S.failRepeat[e.threadId], d), e, now, C.repeatFailureMs, needsYou);
     if (r.repeats) Object.assign(e, r.repeats);
-    S.failRepeat[e.threadId] = r.rec; saveState();
+    S.failRepeat[e.threadId] = tagDest(r.rec, d); saveState();
     if (r.hold) { log(`held back thread.failed "${e.title}" ${ref(e).slice(-12)}: same error as its last sent failure (${r.rec.held} held)`); markDelivered(e); return true; }
   }
   if (!(C.failureWaveMs > 0)) return false;
-  if (!wave) wave = { items: [], opened: now, timer: null };
-  wave.items.push(e); clearTimeout(wave.timer);
-  wave.timer = setTimeout(() => flushWave().catch((err) => log("error:", err.message)), waveDelay(wave.opened, now, C.failureWaveMs, C.failureWaveMaxMs));
+  const w = d.wave || (d.wave = { items: [], opened: now, timer: null });
+  w.items.push(e); clearTimeout(w.timer);
+  w.timer = setTimeout(() => flushWave(d).catch((err) => log("error:", err.message)), waveDelay(w.opened, now, C.failureWaveMs, C.failureWaveMaxMs));
   return true;
 }
-async function flushWave() {
-  const w = wave; wave = null; if (!w || !w.items.length) return;
+async function flushWave(d) { // one destination's wave: a batch only ever holds failures bound for the same webhook
+  const w = d.wave; d.wave = null; if (!w || !w.items.length) return;
   return deliver(w.items.length === 1 ? w.items[0] : batchEvent(w.items, C.machine), { now: true });
 }
 function stamp(e) { cleanEvent(e); e.text = summary(e); e.sentAt = new Date().toISOString(); e.eventId = crypto.createHash("sha256").update(`${e.event}|${ref(e) || (e.failures || []).map((f) => f.runId).join(",")}`).digest("hex").slice(0, 16); }
@@ -318,8 +329,8 @@ async function deliver(e, opts = {}) { // opts.now: send without the failure-wav
   // keep it queued and retry every 60s: retryable failures (network, 408, 429, 5xx) for up to 24h, other 4xx 10 times
   retryLater({ e, rounds: 0, since: Date.now() }); return false;
 }
-setInterval(async () => {
-  const q = queue; queue = [];
+async function retryRound(d) { // every minute, each destination's queue on its own, so one that is slow or down doesn't hold up another
+  const q = d.queue; d.queue = [];
   for (const item of q) {
     const { e } = item; item.rounds++; if (!e.eventId) stamp(e); e.sentAt = new Date().toISOString();
     const r = await post(e);
@@ -328,8 +339,9 @@ setInterval(async () => {
     if (r.retry ? Date.now() - item.since < 864e5 : item.rounds < 10) retryLater(item);
     else log(`giving up on ${e.event} ${ref(e).slice(-12)} after ${item.rounds} retries; it is tried again when the listener restarts`);
   }
-  if (refillFromState(queue, S, Date.now())) saveState();
-}, 60000).unref();
+  if (refillFromState(d.queue, S, Date.now(), (e) => destFor(e) === d)) saveState();
+}
+setInterval(() => { for (const d of C ? destsOf(C) : []) retryRound(d); }, 60000).unref();
 
 // ---------- state: which requests the phone has been told about ----------
 let S = { sent: {}, finished: {}, failRepeat: {} };
@@ -543,6 +555,14 @@ const catchUpSince = (lastAlive, start, catchUpMinutes) => { const s = lastAlive
   return s && catchUpMinutes !== null && catchUpMinutes !== undefined ? Math.max(s, start - catchUpMinutes * 60000) : s; };
 const START = Date.now();
 let resentSaved = false;
+// run ends saved but not delivered before the restart (up to a day old): in order within each destination, the destinations side by
+// side, so one that is down doesn't hold up another's catch-up. lastAlive and catchUpMinutes stay one per listener: they describe
+// what T3 did while the listener was away, not what a webhook received.
+async function resendSaved() {
+  const by = new Map();
+  for (const f of Object.values(S.finished)) if (f.e) { const d = destFor(f.e); if (!by.has(d)) by.set(d, []); by.get(d).push(f); }
+  await Promise.all([...by.values()].map(async (list) => { for (const f of list) if (f.e && Date.now() - f.at < 864e5) await deliver(f.e); }));
+}
 const catchUpThreads = (threads, since) => (threads || []).filter((t) => Date.parse(t.updatedAt || 0) > since); // busy too: failed always fires
 setInterval(() => {
   if (DRY || !C) return;
@@ -583,7 +603,7 @@ async function onItem(ep, v, full, ctx = {}) {
     for (const t of v.snapshot.threads || []) noteRun(t);
     if (!DRY) {
       pruneFinished();
-      if (!resentSaved) { resentSaved = true; for (const f of Object.values(S.finished)) if (f.e && Date.now() - f.at < 864e5) await deliver(f.e); } // not delivered before the restart
+      if (!resentSaved) { resentSaved = true; await resendSaved(); } // not delivered before the restart
       const since = catchUpSince(S.lastAlive, START, C.catchUpMinutes), failedSince = catchUpSince(S.lastAlive, START, null); // 0 on the first run with this feature: nothing to catch up on
       // idle finished threads have status like "idle", not completed/failed; buildEnd skips runs completed before since
       // look at busy threads too so a failed end from downtime is still reported (failed always fires)
@@ -763,7 +783,7 @@ async function previewFinish() { // print the run-end event the listener would s
     if (a) Object.assign(e, a, a.resumeAt ? { resumeAtLocal: localTime(a.resumeAt) } : {});
   }
   cleanEvent(e); e.text = summary(e);
-  if (e.event === "thread.failed" && C.repeatFailureMs > 0 && repeatCheck(((readJSON(STATE, {}) || {}).failRepeat || {})[t.id], e, Date.now(), C.repeatFailureMs, e.delegated && !!usageLimitFields(t, run)).hold) console.log("would hold back: the same error as this thread's last sent failure, inside repeatFailureHours");
+  if (e.event === "thread.failed" && C.repeatFailureMs > 0 && repeatCheck(repeatsHere(((readJSON(STATE, {}) || {}).failRepeat || {})[t.id], destFor(e)), e, Date.now(), C.repeatFailureMs, e.delegated && !!usageLimitFields(t, run)).hold) console.log("would hold back: the same error as this thread's last sent failure, inside repeatFailureHours");
   console.log("PREVIEW payload (not sent) " + JSON.stringify(e, null, 1));
 }
 
@@ -774,3 +794,4 @@ t3listen preview-finish --thread id|title   print the run-end event for a thread
 t3listen install [--approvals] | uninstall | status   start at login (macOS LaunchAgent, Windows logon task, Linux systemd --user)`;
 if (require.main !== module) module.exports = { keepForRetry, refillFromState, MAX_RETRY_QUEUE, pickThread, idLike, systemdUnit, localTime, approvalsLine, staleMinutes, RED, clean, cleanEvent, summary, requestInfo, endedAt, tickLastAlive, catchUpThreads, afterSnapshotListen, usageLimitFields, shellReadyToArm, canArmResume, compileFilters, filterSkip, filterDecision, filtersLine, catchUpSince, reliability, settingsLine, failureKey, repeatCheck, waveDelay, batchEvent };
 else ({ run, setup, test, "preview-finish": previewFinish, install: async () => install(), uninstall: async () => uninstall(), status: async () => status() }[cmd] || (async () => console.log(USAGE)))().catch((e) => { console.error("error:", e.message); process.exit(1); });
+if (require.main !== module) Object.assign(module.exports, { newDest, destsOf, destFor, repeatsHere, tagDest });
