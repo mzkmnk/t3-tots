@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Dummy webhooks for checking t3listen routes by hand (docs/routes/VERIFY.md). `node tests/dummy-webhook.js main mobile-app`
+// Dummy webhooks for checking t3listen routes by hand. `node tests/dummy-webhook.js main mobile-app`
 // starts one webhook per name on 127.0.0.1, prints each one's URL, then one line per POST it gets: which webhook, the event, its
 // project and title, and the Authorization header's last 4 characters only. It answers 200 and forwards nothing. Ctrl-C stops it.
 const http = require("http");

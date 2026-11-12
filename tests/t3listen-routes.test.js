@@ -343,7 +343,7 @@ test("setup --project: refuses without a main webhook, a name or a good url, and
   } finally { for (const d of [empty, dir]) fs.rmSync(d, { recursive: true, force: true }); }
 });
 
-// ---------- checking routes: test --project / --all, preview-finish, and the by-hand steps in docs/routes/VERIFY.md ----------
+// ---------- checking routes: test --project / --all, preview-finish, and checking by hand with tests/dummy-webhook.js ----------
 const runTool = (f, args, env = {}) => new Promise((done) => cp.execFile(process.execPath, [path.join(f.dir, "t3listen"), ...args],
   { env: { ...process.env, T3_HOME: path.join(f.dir, "t3"), ...env } }, (err, out, errOut) => done({ code: err ? err.code : 0, out: out + errOut })));
 const TWO_ROUTES = (f) => ({ headers: { Authorization: TOP_KEY }, routes: { "iOS-App": { url: f.hookUrl("/ios"), headers: { Authorization: ROUTE_KEY } }, "old-app": { url: f.hookUrl("/old") } } });
@@ -417,7 +417,7 @@ test("preview-finish names the webhook a thread's run end would go to", async ()
   } finally { await f.close(); }
 });
 
-test("by hand (docs/routes/VERIFY.md): dummy webhooks, setup --project and test --all show each test at its own webhook with its own key", async () => {
+test("by hand: dummy webhooks, setup --project and test --all show each test at its own webhook with its own key", async () => {
   const dummy = cp.spawn(process.execPath, [path.join(__dirname, "dummy-webhook.js"), "main", "mobile-app"], { stdio: ["ignore", "pipe", "pipe"] });
   let out = ""; dummy.stdout.on("data", (d) => (out += d)); dummy.stderr.on("data", (d) => (out += d));
   const until = async (pred, what) => { const end = Date.now() + 8000; while (!pred()) { if (Date.now() > end) throw new Error(`timed out waiting for ${what}\n${out}`); await fakeT3.sleep(40); } };
