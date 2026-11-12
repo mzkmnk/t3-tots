@@ -17,7 +17,7 @@ Change nothing on the user's computers unless the user approved that exact chang
 | t3-waiting, t3-phone-answers, t3-watch | Answers to questions and approvals, under "Decisions" below |
 | t3-watch (delegated mode) | One nudge per stall (`send`), `queue --resume` once for a stuck queue, and `resume-at-reset` on a usage limit |
 | t3-phone-answers | `t3listen` setup, after a yes. In delegated mode also `resume-at-reset` for a thread that stopped on a usage limit |
-| t3-project-setup | One project's route in `listen.json` (`t3listen setup --project`, or `--remove`) and a `t3listen install` to restart the listener, after a yes |
+| t3-project-setup | One project's route in `listen.json` (`t3listen setup --project`, or `--remove`) and a `t3listen install` to restart the listener, after a yes. T3 Tots: a project bot made from its template, after a yes to the filled text |
 | t3-update, t3-sync | The items the user picked |
 | t3-project-tracker | Its tracker file |
 | t3-save-learnings | `AGENTS.md` or `CLAUDE.md`, after a yes to the diff |
